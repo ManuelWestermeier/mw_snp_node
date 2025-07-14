@@ -1,0 +1,13 @@
+{
+  "name": "mw-snp-node",
+  "version": "1.0.0",
+  "description": "Secure Cryptographic Broadcast Network Node",
+  "main": "run.js",
+  "scripts": {
+    "start": "node run.js"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.0",
+    "tweetnacl-util": "^0.15.1"
+  }
+}
