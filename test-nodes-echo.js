@@ -28,21 +28,21 @@ const nodeCount = 5;
 const keyRoot = path.join(__dirname, 'keys', 'echo_test');
 fs.mkdirSync(keyRoot, { recursive: true });
 
-// Erzeuge Nodes und Public Keys aus Instanzen
+// Erzeuge Nodes und Public + Encryption Keys aus Instanzen
 const nodes = [];
 const pubKeys = [];
 for (let i = 0; i < nodeCount; i++) {
   const dir = path.join(keyRoot, `node${i}`);
   fs.mkdirSync(dir, { recursive: true });
 
-  // Pfade für Ed25519 keypair
+  // Pfade für Ed25519 keypair (sign) und Encryption-Key abgeleitet
   const pkPath = path.join(dir, 'keypair_pk.txt');
   const skPath = path.join(dir, 'keypair_sk.txt');
   const node = new MW_SNP_Node(pkPath, skPath, []);
   nodes.push(node);
 
-  // Public Key aus node.signPublicKey
-  pubKeys[i] = util.encodeBase64(node.signPublicKey);
+  // Encryption Public Key (Curve25519) aus node.encPublicKey
+  pubKeys[i] = util.encodeBase64(node.encPublicKey);
 }
 
 // Konfiguriere Peers
