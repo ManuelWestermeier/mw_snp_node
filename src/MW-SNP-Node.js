@@ -4,6 +4,11 @@ const nacl = require("tweetnacl");
 const util = require("tweetnacl-util");
 const crypto = require("crypto");
 
+const PACKET_SIZE = 1024;
+const POW_DIFFICULTY = 0xf8; // first 5 bits must be zero
+const SIGNATURE_SIZE = 64;
+const PUBKEY_SIZE = 32;
+
 class MW_SNP_Node {
   constructor(pkPath, skPath, connections = []) {
     this.pkPath = pkPath;
@@ -35,22 +40,38 @@ class MW_SNP_Node {
   }
 
   _handleMessage(msg, rinfo) {
-    if (msg.length !== 1024) return;
+    if (msg.length !== PACKET_SIZE) return;
 
-    // Verify PoW (first 5 bits of SHA3-256 hash must be 0)
     const hash = crypto.createHash("sha3-256").update(msg).digest();
-    if ((hash[0] & 0xf8) !== 0) return;
+    if ((hash[0] & POW_DIFFICULTY) !== 0) return;
 
-    // Check if we've already seen this packet
     const id = hash.toString("hex");
     if (this.cache.has(id)) return;
     this.cache.add(id);
 
     const flag = msg.readUInt8(0);
-    const data = msg.slice(1, msg.length - 16); // Truncate potential future footer
+    let senderPk = null;
+    let data;
 
-    // Currently, senderPk not implemented in decoding logic
-    const senderPk = flag === 0x01 ? null : null;
+    if (flag === 0x01) {
+      const sig = msg.slice(1, 1 + SIGNATURE_SIZE);
+      const pk = msg.slice(
+        1 + SIGNATURE_SIZE,
+        1 + SIGNATURE_SIZE + PUBKEY_SIZE
+      );
+      const payload = msg.slice(
+        1 + SIGNATURE_SIZE + PUBKEY_SIZE,
+        PACKET_SIZE - 4
+      );
+
+      const valid = nacl.sign.detached.verify(payload, sig, pk);
+      if (!valid) return;
+
+      senderPk = util.encodeBase64(pk);
+      data = payload;
+    } else {
+      data = msg.slice(1, PACKET_SIZE - 4);
+    }
 
     this.callbacks.forEach((cb) => cb(senderPk, data));
   }
@@ -58,43 +79,49 @@ class MW_SNP_Node {
   start(port = 0) {
     if (this.running) return;
     this.running = true;
-
     this.socket.on("message", (msg, rinfo) => this._handleMessage(msg, rinfo));
     this.socket.bind(port, () => {
       console.log("Node listening on port", this.socket.address().port);
-      this._loop(); // Start dummy traffic loop
+      this._loop();
     });
   }
 
   _loop() {
     if (!this.running) return;
-    const wait = (Math.random() * 4 + 1) * 60 * 1000; // 1–5 min
+    const wait = (Math.random() * 4 + 1) * 60 * 1000;
     setTimeout(async () => {
-      await this.send(null, true); // Dummy anonymous packet
+      await this.send(null, true);
       this._loop();
     }, wait);
   }
 
   async send(data, anonymous = false) {
     const flag = anonymous ? 0x00 : 0x01;
-    const packet = Buffer.alloc(1024, 0);
+    const packet = Buffer.alloc(PACKET_SIZE, 0);
+    packet.writeUInt8(flag, 0);
 
-    // Data to fill in (or dummy)
-    let payload = data ? Buffer.from(data) : crypto.randomBytes(1023);
-    if (payload.length > 1023) {
-      throw new Error("Payload too large, must be ≤1023 bytes.");
+    let payload;
+    if (!data) {
+      payload = crypto.randomBytes(PACKET_SIZE - 1 - 4);
+    } else {
+      payload = Buffer.from(data);
     }
 
-    packet.writeUInt8(flag, 0);
-    payload.copy(packet, 1);
+    if (!anonymous) {
+      const sig = nacl.sign.detached(payload, this.secretKey);
+      Buffer.from(sig).copy(packet, 1);
+      Buffer.from(this.publicKey).copy(packet, 1 + SIGNATURE_SIZE);
+      payload.copy(packet, 1 + SIGNATURE_SIZE + PUBKEY_SIZE);
+    } else {
+      payload.copy(packet, 1);
+    }
 
-    // PoW: Adjust last 4 bytes (nonce) until first 5 bits of SHA3-256 are 0
     let nonce = 0;
     let hash;
     do {
-      packet.writeUInt32BE(nonce++, 1020); // nonce in last 4 bytes
+      packet.writeUInt32BE(nonce++, PACKET_SIZE - 4);
       hash = crypto.createHash("sha3-256").update(packet).digest();
-    } while ((hash[0] & 0xf8) !== 0);
+    } while ((hash[0] & POW_DIFFICULTY) !== 0);
 
     for (const conn of this.connections) {
       const [host, portStr] = conn.split(":");

@@ -33,7 +33,7 @@ for (let i = 0; i < 3; i++) {
 
   const node = new MW_SNP_Node(pkPath, skPath, connections);
   node.onPocket((senderPk, data) => {
-    console.log(`Node ${i} received:`, data.toString(), senderPk);
+  console.log("Received:", data.toString(), senderPk ? "(signed)" : "(anonymous)");
   });
   node.start(port);
 
