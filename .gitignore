@@ -4,3 +4,5 @@ node_modules/
 
 keys/pk.txt
 keys/sk.txt
+
+keys/test/
