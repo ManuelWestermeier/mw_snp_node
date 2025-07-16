@@ -1,106 +1,93 @@
-// test-mw_snp_node.js
+// test-nodes-echo.js
+// Fünf Nodes: 0=Echo-Node, 1=Client, 2-4=Idle
+// Node 0: sendet empfangene (nicht-anonyme) Nachrichten zurück an den Sender
+// Node 1: sendet alle 3 Sekunden Nachrichten an Node 0
+// Alle Nodes loggen eingegangene Nachrichten
 
-const os = require("os");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const SecureBroadcastNode = require("./src/MW-SNP-Node.js");
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const util = require('tweetnacl-util');
+const MW_SNP_Node = require('./src/MW-SNP-Node.js');
 
 // Hilfsfunktion: Lokale IPv4-Adresse ermitteln
 function getLocalIP() {
-  const interfaces = os.networkInterfaces();
-  for (const name in interfaces) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
+  const ifs = os.networkInterfaces();
+  for (const name in ifs) {
+    for (const iface of ifs[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
     }
   }
-  return "127.0.0.1";
+  return '127.0.0.1';
 }
 
 const localIP = getLocalIP();
-const basePort = 5000;
+const basePort = 6000;
 const nodeCount = 5;
-const keyDirRoot = path.join(__dirname, "keys", "test");
-fs.mkdirSync(keyDirRoot, { recursive: true });
+const keyRoot = path.join(__dirname, 'keys', 'echo_test');
+fs.mkdirSync(keyRoot, { recursive: true });
 
-// Schritt 1: Nodes erstellen und Schlüssel laden/generieren
+// Erzeuge Nodes und Public Keys aus Instanzen
 const nodes = [];
-const allPubKeys = [];
-
+const pubKeys = [];
 for (let i = 0; i < nodeCount; i++) {
-  const dir = path.join(keyDirRoot, `node${i}`);
+  const dir = path.join(keyRoot, `node${i}`);
   fs.mkdirSync(dir, { recursive: true });
 
-  // Pfade für public/secret Ed25519 key
-  const pkPath = path.join(dir, "keypair_pk.txt");
-  const skPath = path.join(dir, "keypair_sk.txt");
-  const node = new SecureBroadcastNode(dir, []);
+  // Pfade für Ed25519 keypair
+  const pkPath = path.join(dir, 'keypair_pk.txt');
+  const skPath = path.join(dir, 'keypair_sk.txt');
+  const node = new MW_SNP_Node(pkPath, skPath, []);
   nodes.push(node);
 
-  // Public‑Key lesen
-  const keyB64 = fs.readFileSync(pkPath, "utf8").trim();
-  allPubKeys.push(keyB64);
+  // Public Key aus node.signPublicKey
+  pubKeys[i] = util.encodeBase64(node.signPublicKey);
 }
 
-// Hilfsfunktion: zufällige Peers-Strings erzeugen
-function getRandomPeers(index, count = 2) {
-  const others = Array.from({ length: nodeCount }, (_, j) => j).filter(
-    (j) => j !== index
-  );
-  for (let i = others.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [others[i], others[j]] = [others[j], others[i]];
+// Konfiguriere Peers
+nodes.forEach((node, idx) => {
+  if (idx === 1) {
+    // Client sendet an Echo (Node 0)
+    node.connections = [`${localIP}:${basePort}:${pubKeys[0]}`];
+  } else if (idx === 0) {
+    // Echo sendet zurück an Client (Node 1)
+    node.connections = [`${localIP}:${basePort + 1}:${pubKeys[1]}`];
+  } else {
+    // Idle-Nodes ohne Peers
+    node.connections = [];
   }
-  return others
-    .slice(0, count)
-    .map((j) => `${localIP}:${basePort + j}:${allPubKeys[j]}`);
-}
-
-// Schritt 2: Peers verteilen
-nodes.forEach((node, idx) => {
-  node.peers = getRandomPeers(idx);
 });
 
-// Schritt 3: Start und Empfangs-Callback
+// Logging für alle Nodes
 nodes.forEach((node, idx) => {
-  const port = basePort + idx;
-  node.onMessage((senderPk, data) => {
-    const text = data.toString("utf8").replace(/[^\w \.,_-]/g, "");
-    console.log(
-      `Node ${idx} erhalten: "${text}"`,
-      senderPk ? "(signed)" : "(anon)"
-    );
+  node.onMessage((sender, data) => {
+    console.log(`Node${idx} received from ${sender || 'anon'}: ${data.toString()}`);
   });
-  node.start(port);
-  console.log(`Node ${idx} gestartet auf Port ${port}`);
 });
 
-// Schritt 4: Periodisches Senden zufälliger Nachrichten (1 Sekunde)
+// Start aller Nodes
+nodes.forEach((node, idx) => node.start(basePort + idx));
+console.log('Echo network läuft: Node0=Echo (6000), Node1=Client (6001), Node2-4 idle');
+
+// Client (Node1): schickt alle 3s eine Nachricht an Echo
 setInterval(() => {
-  const i = Math.floor(Math.random() * nodes.length);
-  const node = nodes[i];
-  if (!node.peers.length) return;
+  const msg = `ping ${new Date().toISOString()}`;
+  nodes[1].send(Buffer.from(msg), false, pubKeys[0]);
+  console.log(`Client sent: ${msg}`);
+}, 3000);
 
-  const [host, portStr, recipientPk] =
-    node.peers[Math.floor(Math.random() * node.peers.length)].split(":");
+// Echo-Node (Node0): schickt empfangene nicht-anonyme Nachrichten zurück
+nodes[0].onMessage((sender, data) => {
+  if (!sender) return;  // nur wenn signiert
+  const reply = Buffer.from(`echo: ${data.toString()}`);
+  nodes[0].send(reply, false, sender);
+  console.log(`Echoed back to ${sender}: ${data.toString()}`);
+});
 
-  const msgLen = Math.floor(Math.random() * 10) + 10;
-  const payload =
-    `Node${i}: ` +
-    crypto.randomBytes(msgLen).toString("base64").slice(0, msgLen);
-  const anon = Math.random() > 0.5;
-
-  node.send(Buffer.from(payload, "utf8"), anon, recipientPk);
-  console.log(
-    `Node ${i} sendet ${anon ? "anonym" : "signiert"} → ${host}:${portStr}`
-  );
-}, 1000);
-
-// Graceful Shutdown
-process.on("SIGINT", () => {
-  console.log("Beende alle Nodes...");
-  nodes.forEach((n) => n.stop());
+// Sauberes Beenden
+process.on('SIGINT', () => {
+  console.log('Beende Echo network...');
+  nodes.forEach(n => n.stop());
   process.exit();
 });
